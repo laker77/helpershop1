@@ -1,3 +1,6 @@
+import telegram
+print("python-telegram-bot version:", telegram.__version__)
+
 import logging
 from datetime import datetime
 import pytz
