@@ -2,8 +2,8 @@ import logging
 from datetime import datetime
 import pytz
 import gspread
-import requests
-from io import BytesIO
+import os
+import sys
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,7 +15,10 @@ from telegram.ext import (
 )
 from oauth2client.service_account import ServiceAccountCredentials
 import time
-from functools import lru_cache
+import json
+
+# Додаємо поточну директорію до шляху пошуку Python
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Налаштування логування
 logging.basicConfig(
@@ -24,13 +27,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфігурація
-SHEET_ID = '1fobxr4QwD8CLYFaTh2WXNbGwqQ2mWEuQDPkqDzvzkoU'
-SERVICE_ACCOUNT_FILE = 'creds.json'
-TELEGRAM_TOKEN = '7612249139:AAF9lz2NY3QvY8ZLmlghXuLPF04ACeHTR9U'
+# Конфігурація (використовуємо змінні оточення)
+SHEET_ID = os.getenv('SHEET_ID', '1fobxr4QwD8CLYFaTh2WXNbGwqQ2mWEuQDPkqDzvzkoU')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '7612249139:AAF9lz2NY3QvY8ZLmlghXuLPF04ACeHTR9U')
 TIMEZONE = pytz.timezone('Europe/Kiev')
-ORDER_CHAT_ID = -1002501381102
-ORDER_TOPIC_ID = 914  # ID топика
+ORDER_CHAT_ID = int(os.getenv('ORDER_CHAT_ID', '-1002501381102'))
+ORDER_TOPIC_ID = int(os.getenv('ORDER_TOPIC_ID', '914'))
+
+# Для сервісного акаунта Google Sheets
+SERVICE_ACCOUNT_JSON = os.getenv('SERVICE_ACCOUNT_JSON')
 
 # Кеш для продуктів
 PRODUCTS_CACHE = None
@@ -46,7 +51,16 @@ def connect_to_google_sheets():
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+        
+        if SERVICE_ACCOUNT_JSON:
+            # Використовуємо JSON з змінної оточення
+            service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
+        else:
+            # Використовуємо файл (для локального розробки)
+            SERVICE_ACCOUNT_FILE = 'creds.json'
+            creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+            
         client = gspread.authorize(creds)
         return client
     except Exception as e:
@@ -898,6 +912,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Запуск бота"""
     try:
+        # Перевіряємо чи є змінна оточення для Render
+        render_webhook = os.getenv('RENDER_EXTERNAL_URL')
+        
         application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         
         # Обробники команд
@@ -913,9 +930,24 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
         
         logger.info("🚀 Бот магазину успішно запущено!")
-        print("🛒 Бот працює! Напишіть /start")
         
-        application.run_polling()
+        if render_webhook:
+            # Використовуємо веб-хуки на Render
+            PORT = int(os.getenv('PORT', 10000))
+            WEBHOOK_URL = f"{render_webhook}/{TELEGRAM_TOKEN}"
+            
+            logger.info(f"🔄 Запуск з веб-хуком: {WEBHOOK_URL}")
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=TELEGRAM_TOKEN,
+                webhook_url=WEBHOOK_URL
+            )
+        else:
+            # Локальний запуск з поллінгом
+            logger.info("🔄 Запуск з поллінгом")
+            print("🛒 Бот працює локально! Напишіть /start")
+            application.run_polling()
         
     except Exception as e:
         logger.error(f"Помилка запуску бота: {e}")
