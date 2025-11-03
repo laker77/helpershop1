@@ -16,7 +16,7 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import time
 import json
 
@@ -66,7 +66,7 @@ def connect_to_google_sheets():
         
         # Використовуємо JSON з змінної оточення
         service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
+        creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
@@ -76,6 +76,9 @@ def connect_to_google_sheets():
 def get_user_data(telegram_username):
     """Отримати дані користувача"""
     try:
+        if not telegram_username:
+            return None
+            
         clean_username = telegram_username.lstrip('@').lower().strip()
         
         client = connect_to_google_sheets()
@@ -110,22 +113,26 @@ def get_user_data(telegram_username):
             elif any(x in header_lower for x in ['актуальні', 'актуальные', 'actual']):
                 actual_col = i
         
+        # Перевіряємо, що знайшли всі необхідні колонки
+        if any(col == -1 for col in [name_col, tg_col, total_col, spent_col, actual_col]):
+            logger.warning("Не знайдено всі необхідні колонки в таблиці")
+        
         # Пошук користувача
         for row_num in range(1, len(all_values)):
             row = all_values[row_num]
-            if len(row) > max(tg_col, total_col, spent_col, actual_col):
-                row_telegram_raw = row[tg_col] if tg_col < len(row) else ""
+            if len(row) > max(tg_col, total_col, spent_col, actual_col) and all(col < len(row) for col in [tg_col, total_col, spent_col, actual_col] if col != -1):
+                row_telegram_raw = row[tg_col] if tg_col != -1 and tg_col < len(row) else ""
                 row_telegram_clean = row_telegram_raw.strip().lstrip('@').lower()
                 
                 if row_telegram_clean == clean_username:
                     user_data = {
                         'row_num': row_num + 1,
-                        'name': row[name_col] if name_col < len(row) else "",
-                        'static_id': row[static_id_col] if static_id_col < len(row) else "",
-                        'telegram': row[tg_col] if tg_col < len(row) else "",
-                        'total_balance': int(row[total_col]) if total_col < len(row) and row[total_col].isdigit() else 0,
-                        'spent_balance': int(row[spent_col]) if spent_col < len(row) and row[spent_col].isdigit() else 0,
-                        'actual_balance': int(row[actual_col]) if actual_col < len(row) and row[actual_col].isdigit() else 0,
+                        'name': row[name_col] if name_col != -1 and name_col < len(row) else "",
+                        'static_id': row[static_id_col] if static_id_col != -1 and static_id_col < len(row) else "",
+                        'telegram': row[tg_col] if tg_col != -1 and tg_col < len(row) else "",
+                        'total_balance': int(row[total_col]) if total_col != -1 and total_col < len(row) and row[total_col].isdigit() else 0,
+                        'spent_balance': int(row[spent_col]) if spent_col != -1 and spent_col < len(row) and row[spent_col].isdigit() else 0,
+                        'actual_balance': int(row[actual_col]) if actual_col != -1 and actual_col < len(row) and row[actual_col].isdigit() else 0,
                         'name_col': name_col,
                         'static_id_col': static_id_col,
                         'tg_col': tg_col,
@@ -188,17 +195,18 @@ def get_products_from_sheet():
             if len(row) > max(id_col, name_col, price_col, category_col):
                 try:
                     product = {
-                        'id': int(row[id_col]) if id_col < len(row) and row[id_col].isdigit() else row_num,
-                        'name': row[name_col] if name_col < len(row) else f"Товар {row_num}",
-                        'description': row[description_col] if description_col < len(row) else "Опис відсутній",
-                        'price': int(row[price_col]) if price_col < len(row) and row[price_col].isdigit() else 0,
-                        'category': row[category_col] if category_col < len(row) else "other",
-                        'image_url': row[image_col] if image_col < len(row) and row[image_col].strip() else None
+                        'id': int(row[id_col]) if id_col != -1 and id_col < len(row) and row[id_col].isdigit() else row_num,
+                        'name': row[name_col] if name_col != -1 and name_col < len(row) else f"Товар {row_num}",
+                        'description': row[description_col] if description_col != -1 and description_col < len(row) else "Опис відсутній",
+                        'price': int(row[price_col]) if price_col != -1 and price_col < len(row) and row[price_col].isdigit() else 0,
+                        'category': row[category_col] if category_col != -1 and category_col < len(row) else "other",
+                        'image_url': row[image_col] if image_col != -1 and image_col < len(row) and row[image_col].strip() else None
                     }
                     
                     if product['price'] > 0:
                         products.append(product)
                 except Exception as e:
+                    logger.warning(f"Помилка обробки товару в рядку {row_num}: {e}")
                     continue
         
         PRODUCTS_CACHE = products
@@ -216,6 +224,12 @@ def update_spent_balance(user_data, additional_spent):
         sheet = client.open_by_key(SHEET_ID).worksheet('Баланси')
         
         new_spent = user_data['spent_balance'] + additional_spent
+        
+        # Перевіряємо, що колонка існує
+        if user_data['spent_col'] == -1:
+            logger.error("Колонка для витрачених балів не знайдена")
+            return False
+            
         sheet.update_cell(user_data['row_num'], user_data['spent_col'] + 1, new_spent)
         
         logger.info(f"Баланс оновлено: {user_data['telegram']} - {additional_spent} балів")
@@ -925,11 +939,10 @@ def main():
             logger.error("❌ TELEGRAM_TOKEN не знайдено!")
             return
         
-        # Створюємо Application без JobQueue для уникнення помилки weakref
+        # Створюємо Application
         application = (
             ApplicationBuilder()
             .token(TELEGRAM_TOKEN)
-            .concurrent_updates(True)
             .build()
         )
         
