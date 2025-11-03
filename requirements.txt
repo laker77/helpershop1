@@ -1,0 +1,7 @@
+python-telegram-bot[ext]==20.3
+gspread
+oauth2client
+pytz
+requests
+beautifulsoup4
+cloudscraper
